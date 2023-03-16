@@ -30,58 +30,58 @@ async def perform_request_with_retry(page, url):
             await asyncio.sleep(random.uniform(1, 5))
 
 
-async def extract_product_urls(browser, page):
-    # Select all elements with the product links
+async def get_product_urls(browser, page):
+    # Select all elements with the product urls
     all_items = await page.query_selector_all(
         '.a-link-normal.s-underline-text.s-underline-link-text.s-link-style.a-text-normal')
-    product_url = set()
-
+    product_urls = set()
     # Loop through each item and extract the href attribute
     for item in all_items:
         url = await item.get_attribute('href')
-
-        # Clean the link based on certain conditions
-        if '/sspa/click?ie' in url:
+        # If the link contains '/ref' 
+        if '/ref' in url:
+            # Extract the base URL
+            full_url = 'https://www.amazon.in' + url.split("/ref")[0]
+        # If the link contains '/sspa/click?ie'
+        elif '/sspa/click?ie' in url:
+            # Extract the product ID and clean the URL
             product_id = url.split('%2Fref%')[0]
             clean_url = product_id.replace("%2Fdp%2F", "/dp/")
             urls = clean_url.split('url=%2F')[1]
             full_url = 'https://www.amazon.in/' + urls
-        elif '/ref' in url:
-            full_url = 'https://www.amazon.in' + url.split("/ref")[0]
+        # If the link doesn't contain either '/sspa/click?ie' or '/ref'
         else:
+            # Use the original URL
             full_url = 'https://www.amazon.in' + url
 
-        # Filter out links with certain substrings
-        substrings = ['Basket', 'Accessories', 'accessories', 'Disposable', 'Paper', 'Reusable', 'Steamer', 'Silicone',
-                      'Liners', 'Vegetable-Preparation', 'Pan', 'parchment', 'Parchment', 'Cutter', 'Tray',
-                      'Cheat-Sheet', 'Reference-Various', 'Cover', 'Crisper', 'Replacement']
-        if not any(substring in full_url for substring in substrings):
-            product_url.add(full_url)  # Use add instead of append to prevent duplicates
+        if not any(substring in full_url for substring in
+                   ['Basket', 'Accessories', 'accessories', 'Disposable', 'Paper', 'Reusable', 'Steamer', 'Silicone',
+                    'Liners', 'Vegetable-Preparation', 'Pan', 'parchment', 'Parchment', 'Cutter', 'Tray', 'Cheat-Sheet',
+                    'Reference-Various', 'Cover', 'Crisper', 'Replacement']):
+            product_urls.add(full_url)
+            # Use add instead of append to prevent duplicates
 
     # Check if there is a next button
     next_button = await page.query_selector(
         "a.s-pagination-item.s-pagination-next.s-pagination-button.s-pagination-separator")
     if next_button:
-        # If there is a next button, click on it with retries
-        MAX_RETRIES = 5
-        retry_count = 0
-        while retry_count < MAX_RETRIES:
-            try:
-                await next_button.click(timeout=30000)
-                break
-            except:
-                retry_count += 1
-                if retry_count == MAX_RETRIES:
-                    raise Exception("Failed to click next button")
-                await asyncio.sleep(random.uniform(1, 5))
+        # If there is a next button, click on it
+        is_button_clickable = await next_button.is_enabled()
+        if is_button_clickable:
+            await next_button.click()
+            # Wait for the next page to load
+            await page.wait_for_selector(
+                '.a-link-normal.s-underline-text.s-underline-link-text.s-link-style.a-text-normal')
+            # Recursively call the function to extract links from the next page
+            product_urls.update(
+                await get_product_urls(browser, page))  # Use update instead of += to prevent duplicates
+        else:
+            print("Next button is not clickable")  # Use update instead of += to prevent duplicates
 
-        # Wait for the next page to load
-        await page.wait_for_selector('.a-link-normal.s-underline-text.s-underline-link-text.s-link-style.a-text-normal')
-        # Recursively call the function to extract links from the next page
-        product_url.update(
-            await extract_product_urls(browser, page))  # Use update instead of += to prevent duplicates
-    return list(product_url)
+    num_products = len(product_urls)
+    print(f"Scraped {num_products} products.")
 
+    return list(product_urls)
 
 
 async def get_product_name(page):
@@ -132,23 +132,23 @@ async def get_star_rating(page):
     return star_rating
 
 
-async def get_num_ratings(page):
+async def get_num_reviews(page):
     try:
-        # Find the number of ratings element and get its text content
-        num_ratings_elem = await page.query_selector("#acrCustomerReviewLink #acrCustomerReviewText")
-        num_ratings = await num_ratings_elem.inner_text()
-        num_ratings = num_ratings.split(" ")[0]
+        # Find the number of reviews element and get its text content
+        num_reviews_elem = await page.query_selector("#acrCustomerReviewLink #acrCustomerReviewText")
+        num_reviews = await num_ratings_elem.inner_text()
+        num_reviews = num_ratings.split(" ")[0]
     except:
         try:
             # If the previous attempt failed, check if there are no reviews for the product
             no_review_elem = await page.query_selector("#averageCustomerReviews #acrNoReviewText")
-            num_ratings = await no_review_elem.inner_text()
+            num_reviews = await no_review_elem.inner_text()
         except:
-            # If all attempts fail, set the number of ratings as "Not Available"
-            num_ratings = "Not Available"
-    
-    # Return the number of ratings
-    return num_ratings
+            # If all attempts fail, set the number of reviews as "Not Available"
+            num_reviews = "Not Available"
+
+    # Return the number of reviews
+    return num_reviews
 
 
 async def get_MRP(page):
@@ -284,20 +284,21 @@ async def main():
     async with async_playwright() as pw:
         browser = await pw.firefox.launch()
         page = await browser.new_page()
-        
+
         # Make a request to the Amazon search page and extract the product URLs
-        await perform_request_with_retry(page, 'https://www.amazon.in/s?k=airfry&i=kitchen&crid=ADZU989EVDIH&sprefix=airfr%2Ckitchen%2C4752&ref=nb_sb_ss_ts-doa-p_3_5')
-        product_url = await extract_product_urls(browser, page)
+        await perform_request_with_retry(page,
+                                         'https://www.amazon.in/s?k=airfry&i=kitchen&crid=ADZU989EVDIH&sprefix=airfr%2Ckitchen%2C4752&ref=nb_sb_ss_ts-doa-p_3_5')
+        product_urls = await get_product_urls(browser, page)
         data = []
-        
+
         # Loop through each product URL and scrape the necessary information
-        for i, url in enumerate(product_url):
+        for i, url in enumerate(product_urls):
             await perform_request_with_retry(page, url)
 
             product_name = await get_product_name(page)
             brand = await get_brand_name(page)
             star_rating = await get_star_rating(page)
-            num_ratings = await get_num_ratings(page)
+            num_reviews = await get_num_reviews(page)
             MRP = await get_MRP(page)
             sale_price = await get_sale_price(page)
             home_kitchen_rank, air_fryers_rank = await get_best_sellers_rank(page)
@@ -307,18 +308,18 @@ async def main():
             # Print progress message after processing every 10 product URLs
             if i % 10 == 0 and i > 0:
                 print(f"Processed {i} links.")
-            
+
             # Print completion message after all product URLs have been processed
-            if i == len(product_links) - 1:
+            if i == len(product_urls) - 1:
                 print(f"All information for url {i} has been scraped.")
 
             # Add the corresponding date
             today = datetime.datetime.now().strftime("%Y-%m-%d")
             # Add the scraped information to a list
             data.append((
-                        today, url, product_name, brand, star_rating, num_ratings, MRP, sale_price, colour,
-                        capacity, wattage, country_of_origin,
-                        home_kitchen_rank, air_fryers_rank, technical_details, bullet_points))
+                today, url, product_name, brand, star_rating, num_reviews, MRP, sale_price, colour,
+                capacity, wattage, country_of_origin,
+                home_kitchen_rank, air_fryers_rank, technical_details, bullet_points))
 
         # Convert the list of tuples to a Pandas DataFrame and save it to a CSV file
         df = pd.DataFrame(data,
@@ -328,10 +329,10 @@ async def main():
                                    'description'])
         df.to_csv('product_data.csv', index=False)
         print('CSV file has been written successfully.')
-        
+
         # Close the browser
         await browser.close()
 
+
 if __name__ == '__main__':
     asyncio.run(main())
-
